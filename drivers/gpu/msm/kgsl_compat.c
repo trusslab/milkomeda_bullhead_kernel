@@ -14,6 +14,7 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
+#include <linux/prints.h>
 #include <asm/ioctl.h>
 
 #include "kgsl.h"
@@ -349,6 +350,11 @@ static const struct kgsl_ioctl kgsl_compat_ioctl_funcs[] = {
 long kgsl_compat_ioctl(struct file *filep, unsigned int cmd,
 				unsigned long arg)
 {
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
 	return kgsl_ioctl_helper(filep, cmd, kgsl_compat_ioctl_funcs,
 				ARRAY_SIZE(kgsl_compat_ioctl_funcs), arg);
 }

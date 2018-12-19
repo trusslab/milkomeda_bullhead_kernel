@@ -533,7 +533,13 @@ void free_pgd_range(struct mmu_gather *tlb,
 	if (addr > end - 1)
 		return;
 
-	pgd = pgd_offset(tlb->mm, addr);
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+	    (current->mm == tlb->mm) && (addr >= current->mm->dom_start_addr) &&
+	    (end <= current->mm->dom_end_addr)) {
+		pgd = secure_pgd_offset(current->mm, addr);
+	} else {
+		pgd = pgd_offset(tlb->mm, addr);
+	}
 	do {
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(pgd))
@@ -1308,7 +1314,13 @@ static void unmap_page_range(struct mmu_gather *tlb,
 	BUG_ON(addr >= end);
 	mem_cgroup_uncharge_start();
 	tlb_start_vma(tlb, vma);
-	pgd = pgd_offset(vma->vm_mm, addr);
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+	    (current->mm == vma->vm_mm) && (addr >= current->mm->dom_start_addr) &&
+	    (end <= current->mm->dom_end_addr)) {
+		pgd = secure_pgd_offset(current->mm, addr);
+	} else {
+		pgd = pgd_offset(vma->vm_mm, addr);
+	}
 	do {
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(pgd))

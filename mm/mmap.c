@@ -36,6 +36,7 @@
 #include <linux/sched/sysctl.h>
 #include <linux/notifier.h>
 #include <linux/memory.h>
+#include <linux/prints.h>
 
 #include <asm/uaccess.h>
 #include <asm/cacheflush.h>
@@ -1972,6 +1973,86 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 }
 #endif
 
+#ifndef HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
+unsigned long
+arch_get_unmapped_area_topdown_domain(struct file *filp, const unsigned long addr0,
+			  const unsigned long len, const unsigned long pgoff,
+			  const unsigned long flags)
+{
+	struct vm_area_struct *vma, *prev;
+	struct mm_struct *mm = current->mm;
+	unsigned long addr = addr0;
+	struct vm_unmapped_area_info info;
+
+	/* requested length too big for entire address space */
+	if (len > TASK_SIZE - mmap_min_addr)
+		return -ENOMEM;
+
+	if (flags & MAP_FIXED)
+		return addr;
+
+	/* requesting a specific address */
+	if (addr) {
+		if (!(current->secure_pgd_mode || current->secure_pgd_tmp_covert) &&
+		    !((addr + len <= mm->dom_start_addr) || (addr >= mm->dom_end_addr))) {
+			PRINTK_ERR("A thread not in the domain cannot ask for memory in the domain\n");
+			return -EINVAL;
+		}
+		addr = PAGE_ALIGN(addr);
+		vma = find_vma_prev(mm, addr, &prev);
+		if (TASK_SIZE - len >= addr && addr >= mmap_min_addr &&
+				(!vma || addr + len <= vm_start_gap(vma)) &&
+				(!prev || addr >= vm_end_gap(prev)))
+			return addr;
+	}
+
+	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
+	info.length = len;
+	/* FIXME: this won't allocate anything past the dom_end_addr */
+	if ((current->secure_pgd_mode || current->secure_pgd_tmp_covert) && len < 0x10000) {
+		PRINTKM("trusted heap allocation\n");
+		info.low_limit = current->mm->dom_start_addr;
+		info.high_limit = current->mm->dom_end_addr;
+	} else {
+		PRINTKM("untrusted heap allocation\n");
+		info.low_limit = max(PAGE_SIZE, mmap_min_addr);
+		info.high_limit = current->mm->dom_start_addr;
+	}
+	info.align_mask = 0;
+	addr = vm_unmapped_area(&info);
+
+	/*
+	 * A failed mmap() very likely causes application failure,
+	 * so fall back to the bottom-up function here. This scenario
+	 * can happen with large stack limits and large mmap()
+	 * allocations.
+	 */
+	if (addr & ~PAGE_MASK) {
+		VM_BUG_ON(addr != -ENOMEM);
+		info.flags = 0;
+		info.low_limit = TASK_UNMAPPED_BASE;
+		info.high_limit = TASK_SIZE;
+		addr = vm_unmapped_area(&info);
+	}
+		
+	if (!(current->secure_pgd_mode || current->secure_pgd_tmp_covert) ||  len >= 0x10000) {
+		if(!((addr + len <= mm->dom_start_addr) || (addr >= mm->dom_end_addr))) {
+			PRINTK_ERR("Untrusted heap allocation returned secure memory!\n");
+			BUG();
+			return -EINVAL;
+		}
+	} else {
+		if(!((addr >= mm->dom_start_addr) && (addr + len <= mm->dom_end_addr))) {
+			PRINTK_ERR("Secure heap allocation returned untrusted memory!\n");
+			BUG();
+			return -EINVAL;
+		}
+	}
+
+	return addr;
+}
+#endif
+
 unsigned long
 get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 		unsigned long pgoff, unsigned long flags)
@@ -2596,6 +2677,14 @@ int vm_munmap(unsigned long start, size_t len)
 {
 	int ret;
 	struct mm_struct *mm = current->mm;
+	if (mm && mm->secure_pgd_enabled) {
+		if (current) {
+			if (current->secure_pgd_mode &&
+			   ((start >= mm->dom_start_addr) && (start + len <= mm->dom_end_addr))) {
+				return 0;
+			}
+		}
+	}
 
 	down_write(&mm->mmap_sem);
 	ret = do_munmap(mm, start, len);
@@ -2739,6 +2828,29 @@ void exit_mmap(struct mm_struct *mm)
 
 	/* mm's last user has gone, and its about to be pulled down */
 	mmu_notifier_release(mm);
+
+	/* FIXME: execute these atomically? */
+	if (mm->secure_pgd_enabled) {
+		pgd_t *pgd, *spgd;
+		dump_stack();
+	       
+		pgd = pgd_offset(mm, mm->dom_start_addr);
+		spgd = secure_pgd_offset(mm, mm->dom_start_addr);
+
+		if (!pgd || !spgd) {
+			PRINTK_ERR("pgd entry is NULL\n");
+			goto resume;
+		}
+
+		pgd_val(*pgd) = pgd_val(*spgd);
+resume:
+		if (mm->secure_pgd)
+			kfree(mm->secure_pgd);
+		else
+			PRINTK_ERR("mm->secure_pgd is NULL\n");
+
+		mm->secure_pgd_enabled = false;
+	}
 
 	if (mm->locked_vm) {
 		vma = mm->mmap;

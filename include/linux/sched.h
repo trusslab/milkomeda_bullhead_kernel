@@ -1576,6 +1576,11 @@ struct task_struct {
 #ifdef CONFIG_TASK_CPUFREQ_STATS
 	struct task_cpufreq_stats cpufreq_stats[NR_CPUS];
 #endif
+
+	bool secure_pgd_mode;
+	bool secure_pgd_tmp_covert;
+	int dom_stack_num;
+	struct pt_regs dom_regs;
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */

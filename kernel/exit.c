@@ -53,6 +53,7 @@
 #include <linux/oom.h>
 #include <linux/writeback.h>
 #include <linux/shm.h>
+#include <linux/prints.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -721,6 +722,9 @@ void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+	if (current && current->mm && current->mm->secure_pgd_enabled) {
+		dump_stack();
+	}
 
 	profile_task_exit(tsk);
 
@@ -931,6 +935,9 @@ void
 do_group_exit(int exit_code)
 {
 	struct signal_struct *sig = current->signal;
+	if (current && current->mm && current->mm->secure_pgd_enabled) {
+		dump_stack();
+	}
 
 	BUG_ON(exit_code & 0x80); /* core dumps don't get here */
 

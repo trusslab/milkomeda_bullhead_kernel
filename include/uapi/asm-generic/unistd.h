@@ -704,9 +704,23 @@ __SYSCALL(__NR_renameat2, sys_ni_syscall)
 __SYSCALL(__NR_seccomp, sys_seccomp)
 #define __NR_getrandom 278
 __SYSCALL(__NR_getrandom, sys_getrandom)
+#define __NR_getaddrdom 279
+__SYSCALL(__NR_getaddrdom, sys_getaddrdom)
+#define __NR_activatedom 280
+__SYSCALL(__NR_activatedom, sys_activatedom)
+#define __NR_destroydom 281
+__SYSCALL(__NR_destroydom, sys_destroydom)
+#define __NR_enterdom 282
+#define __NR_exitdom 283
+#define __NR_readdom 284
+#define __NR_savedom 285
+#define __NR_savearena 286
+#define __NR_readarena 287
+#define __NR_covertdom 288
+#define __NR_overtdom 289
 
 #undef __NR_syscalls
-#define __NR_syscalls 279
+#define __NR_syscalls 282
 
 /*
  * All syscalls below here should go away really,

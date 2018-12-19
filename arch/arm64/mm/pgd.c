@@ -25,6 +25,7 @@
 #include <asm/pgalloc.h>
 #include <asm/page.h>
 #include <asm/tlbflush.h>
+#include <asm/mmu_context.h>
 
 #include "mm.h"
 
@@ -44,4 +45,14 @@ void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 		free_page((unsigned long)pgd);
 	else
 		kfree(pgd);
+}
+
+void __cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
+{
+	/*
+	 * Required during context switch to avoid speculative page table
+	 * walking with the wrong TTBR.
+	 */
+	cpu_set_reserved_ttbr0();
+	cpu_switch_mm(pgd, mm);
 }

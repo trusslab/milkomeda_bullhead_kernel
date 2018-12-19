@@ -337,6 +337,8 @@ struct mm_rss_stat {
 	atomic_long_t count[NR_MM_COUNTERS];
 };
 
+#define DOM_MAX_NUM_STACKS	0x10
+
 struct mm_struct {
 	struct vm_area_struct * mmap;		/* list of VMAs */
 	struct rb_root mm_rb;
@@ -351,6 +353,18 @@ struct mm_struct {
 	unsigned long task_size;		/* size of task vm space */
 	unsigned long highest_vm_end;		/* highest vma end address */
 	pgd_t * pgd;
+	pgd_t * secure_pgd;
+	bool secure_pgd_enabled;
+	pgd_t * secure_pgd_entry;
+	uint64_t dom_start_addr;
+	uint64_t dom_end_addr;
+	uint64_t dom_entry_addr;
+	uint64_t dom_stack_mem;
+	uint64_t dom_stack_mem_size;
+	uint64_t dom_num_stacks;
+	uint64_t dom_stack_size;
+	int dom_stacks[DOM_MAX_NUM_STACKS];
+	spinlock_t dom_stack_lock;
 	atomic_t mm_users;			/* How many users with user space? */
 	atomic_t mm_count;			/* How many references to "struct mm_struct" (users count as 1) */
 	int map_count;				/* number of VMAs */

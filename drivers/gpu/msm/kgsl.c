@@ -30,6 +30,7 @@
 #include <linux/sort.h>
 #include <linux/security.h>
 #include <linux/compat.h>
+#include <linux/prints.h>
 #include <asm/cacheflush.h>
 
 #include "kgsl.h"
@@ -1119,9 +1120,18 @@ static void device_release_contexts(struct kgsl_device_private *dev_priv)
 
 static int kgsl_release(struct inode *inodep, struct file *filep)
 {
-	struct kgsl_device_private *dev_priv = filep->private_data;
-	struct kgsl_device *device = dev_priv->device;
+	struct kgsl_device_private *dev_priv;
+	struct kgsl_device *device;
 	int result;
+
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
+
+	dev_priv = filep->private_data;
+	device = dev_priv->device;
 
 	filep->private_data = NULL;
 
@@ -1185,7 +1195,15 @@ static int kgsl_open(struct inode *inodep, struct file *filep)
 	int result;
 	struct kgsl_device_private *dev_priv;
 	struct kgsl_device *device;
-	unsigned int minor = iminor(inodep);
+	unsigned int minor;
+
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
+
+	minor = iminor(inodep);
 
 	device = kgsl_get_minor(minor);
 	BUG_ON(device == NULL);
@@ -3950,6 +3968,11 @@ done:
 
 static long kgsl_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
 	return kgsl_ioctl_helper(filep, cmd, kgsl_ioctl_funcs,
 				ARRAY_SIZE(kgsl_ioctl_funcs), arg);
 }
@@ -4255,19 +4278,36 @@ kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 			unsigned long len, unsigned long pgoff,
 			unsigned long flags)
 {
-	unsigned long ret = 0, orig_len = len;
-	unsigned long vma_offset = pgoff << PAGE_SHIFT;
-	struct kgsl_device_private *dev_priv = file->private_data;
-	struct kgsl_process_private *private = dev_priv->process_priv;
-	struct kgsl_device *device = dev_priv->device;
-	struct kgsl_mem_entry *entry = NULL;
+	unsigned long ret, orig_len;
+	unsigned long vma_offset;
+	struct kgsl_device_private *dev_priv;
+	struct kgsl_process_private *private;
+	struct kgsl_device *device;
+	struct kgsl_mem_entry *entry;
 	unsigned int align;
-	unsigned int retry = 0;
+	unsigned int retry;
 	struct vm_area_struct *vma;
 	int ret_val;
-	unsigned long gpumap_free_addr = 0;
-	bool flag_top_down = true;
+	unsigned long gpumap_free_addr;
+	bool flag_top_down;
 	struct vm_unmapped_area_info info;
+
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
+
+	ret = 0;
+	orig_len = len;
+	vma_offset = pgoff << PAGE_SHIFT;
+	dev_priv = file->private_data;
+	private = dev_priv->process_priv;
+	device = dev_priv->device;
+	entry = NULL;
+	retry = 0;
+	gpumap_free_addr = 0;
+	flag_top_down = true;
 
 	if (vma_offset == device->memstore.gpuaddr)
 		return get_unmapped_area(NULL, addr, len, pgoff, flags);
@@ -4464,11 +4504,23 @@ put:
 static int kgsl_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	unsigned int ret, cache;
-	unsigned long vma_offset = vma->vm_pgoff << PAGE_SHIFT;
-	struct kgsl_device_private *dev_priv = file->private_data;
-	struct kgsl_process_private *private = dev_priv->process_priv;
-	struct kgsl_mem_entry *entry = NULL;
-	struct kgsl_device *device = dev_priv->device;
+	unsigned long vma_offset;
+	struct kgsl_device_private *dev_priv;
+	struct kgsl_process_private *private;
+	struct kgsl_mem_entry *entry;
+	struct kgsl_device *device;
+
+	if (current && current->mm && current->mm->secure_pgd_enabled &&
+			!current->secure_pgd_mode) {
+		PRINTK_ERR("Threads not in the domain can't access the GPU\n");
+		return -EACCES;
+	}
+
+	vma_offset = vma->vm_pgoff << PAGE_SHIFT;
+	dev_priv = file->private_data;
+	private = dev_priv->process_priv;
+	entry = NULL;
+	device = dev_priv->device;
 
 	/* Handle leagacy behavior for memstore */
 

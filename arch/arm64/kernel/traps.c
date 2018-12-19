@@ -31,6 +31,7 @@
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/syscalls.h>
+#include <linux/prints.h>
 
 #include <asm/atomic.h>
 #include <asm/debug-monitors.h>
@@ -383,6 +384,15 @@ die_sig:
 
 long compat_arm_syscall(struct pt_regs *regs);
 
+asmlinkage long enterdom(struct pt_regs *regs);
+asmlinkage long exitdom(struct pt_regs *regs);
+asmlinkage long readdom(struct pt_regs *regs);
+asmlinkage long savedom(struct pt_regs *regs);
+asmlinkage long savearena(struct pt_regs *regs);
+asmlinkage long readarena(struct pt_regs *regs);
+asmlinkage long covertdom(struct pt_regs *regs);
+asmlinkage long overtdom(struct pt_regs *regs);
+
 asmlinkage long do_ni_syscall(struct pt_regs *regs)
 {
 #ifdef CONFIG_COMPAT
@@ -393,6 +403,22 @@ asmlinkage long do_ni_syscall(struct pt_regs *regs)
 			return ret;
 	}
 #endif
+	if (regs->syscallno == __NR_enterdom)
+		return enterdom(regs);
+	if (regs->syscallno == __NR_exitdom)
+		return exitdom(regs);
+	if (regs->syscallno == __NR_readdom)
+		return readdom(regs);
+	if (regs->syscallno == __NR_savedom)
+		return savedom(regs);
+	if (regs->syscallno == __NR_savearena)
+		return savearena(regs);
+	if (regs->syscallno == __NR_readarena)
+		return readarena(regs);
+	if (regs->syscallno == __NR_covertdom)
+		return covertdom(regs);
+	if (regs->syscallno == __NR_overtdom)
+		return overtdom(regs);
 
 	if (show_unhandled_signals && printk_ratelimit()) {
 		pr_info("%s[%d]: syscall %d\n", current->comm,

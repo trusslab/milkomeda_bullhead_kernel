@@ -23,6 +23,7 @@
 #include <asm/processor.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
+#include <linux/prints.h>
 
 #define check_pgt_cache()		do { } while (0)
 
@@ -42,6 +43,21 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 static inline void pud_populate(struct mm_struct *mm, pud_t *pud, pmd_t *pmd)
 {
 	set_pud(pud, __pud(__pa(pmd) | PMD_TYPE_TABLE));
+	if (mm && mm->secure_pgd_enabled) {
+		pgd_t *spgd;
+		unsigned long diff;
+		if (pud == (pud_t *) mm->secure_pgd_entry) {
+			PRINTK_ERR("Cannot reprogram the secure pgd entry\n");
+			return;
+		}
+		diff = ((unsigned long) pud) - ((unsigned long) mm->pgd);
+		if (diff > ((PTRS_PER_PGD - 1) * sizeof(pgd_t))) {
+			PRINTK_ERR("Unexpected pgd\n");
+			return;
+		}
+		spgd = (pgd_t *)(((unsigned long) mm->secure_pgd) + diff);
+		set_pud((pud_t *) spgd, __pud(__pa(pmd) | PMD_TYPE_TABLE));
+	}
 }
 
 #endif	/* CONFIG_ARM64_64K_PAGES */

@@ -310,6 +310,13 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
 	unsigned long start, end;
 	dev_t dev = 0;
 	const char *name = NULL;
+	if (mm && mm->secure_pgd_enabled) {
+		/* FIXME: I believe vm_end is exclusive. Double-check. */
+		/* FIXME: this is a temporary fix */
+		if (vma->vm_start < mm->dom_end_addr) {
+			return;
+		}
+	}
 
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);

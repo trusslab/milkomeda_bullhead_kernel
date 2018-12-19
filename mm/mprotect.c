@@ -333,6 +333,13 @@ SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 	struct vm_area_struct *vma, *prev;
 	int error = -EINVAL;
 	const int grows = prot & (PROT_GROWSDOWN|PROT_GROWSUP);
+	if (current && current->mm && current->mm->secure_pgd_enabled 
+		&& !current->secure_pgd_mode
+		&& start >= current->mm->dom_start_addr 
+		&& start <= current->mm->dom_end_addr) {
+		printk("Blocked mprotect: start = %lx, len = %zu, prot = %ld\n", start, len, prot);
+		return 0;
+	}
 	prot &= ~(PROT_GROWSDOWN|PROT_GROWSUP);
 	if (grows == (PROT_GROWSDOWN|PROT_GROWSUP)) /* can't be both */
 		return -EINVAL;
@@ -399,15 +406,17 @@ SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 		}
 
 		error = security_file_mprotect(vma, reqprot, prot);
-		if (error)
+		if (error) {
 			goto out;
+		}
 
 		tmp = vma->vm_end;
 		if (tmp > end)
 			tmp = end;
 		error = mprotect_fixup(vma, &prev, nstart, tmp, newflags);
-		if (error)
+		if (error) {
 			goto out;
+		}
 		nstart = tmp;
 
 		if (nstart < prev->vm_end)

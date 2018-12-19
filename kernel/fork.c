@@ -71,6 +71,7 @@
 #include <linux/signalfd.h>
 #include <linux/uprobes.h>
 #include <linux/aio.h>
+#include <linux/prints.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -339,6 +340,8 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	err = arch_dup_task_struct(tsk, orig);
 	if (err)
 		goto free_ti;
+
+	tsk->secure_pgd_mode = false;
 
 	tsk->flags &= ~PF_SU;
 
@@ -2065,4 +2068,314 @@ int unshare_files(struct files_struct **displaced)
 	task->files = copy;
 	task_unlock(task);
 	return 0;
+}
+
+unsigned long
+arch_get_unmapped_area_topdown_domain(struct file *filp, const unsigned long addr0,
+			  const unsigned long len, const unsigned long pgoff,
+			  const unsigned long flags);
+
+SYSCALL_DEFINE2(getaddrdom, uint64_t __user *, start_addr_p,
+			  uint64_t __user *, end_addr_p)
+{
+#ifdef CONFIG_ARM64
+	int i, ret = -ENOMEM;
+	pgd_t *pgd;
+	unsigned long start_addr = 0, end_addr = 0;
+
+	for (i = (PTRS_PER_PGD - 1); i >= 0; i--) {
+		pgd = current->mm->pgd + i;
+		if (pgd_val(*pgd) == 0x0) {
+			start_addr = (unsigned long) (i * PGDIR_SIZE);
+			end_addr = (unsigned long) ((i + 1) * PGDIR_SIZE);
+			ret = 0;
+			break;
+		}
+	}
+
+	current->mm->dom_start_addr = start_addr;
+	current->mm->dom_end_addr = end_addr;
+
+	if (!ret) {
+		if (copy_to_user(start_addr_p, &start_addr, sizeof(uint64_t))) {
+			PRINTK_ERR("copy_to_user for start_addr failed\n");
+			ret = -EFAULT;
+			goto ret;
+		}
+		if (copy_to_user(end_addr_p, &end_addr, sizeof(uint64_t))) {
+			PRINTK_ERR("copy_to_user for end_addr failed\n");
+			ret = -EFAULT;
+			goto ret;
+		}
+	}
+
+ret:
+	return ret;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+SYSCALL_DEFINE5(activatedom, uint64_t, start_addr, uint64_t, entry_addr, uint64_t, stack_mem,
+			     uint64_t, stack_mem_size, uint64_t, num_stacks)
+{
+#ifdef CONFIG_ARM64
+	int i;
+	pgd_t *pgd, *spgd, *dpgd;
+	uint64_t stack_size;
+
+	if (current->mm->secure_pgd_enabled) {
+		return 0;
+	}
+
+	if ((entry_addr < start_addr) || (entry_addr >= (start_addr + PGDIR_SIZE))) {
+		PRINTK_ERR("Invalid domain entry address\n");
+		return -EINVAL;
+	}
+	
+	if ((stack_mem < start_addr) || ((stack_mem + stack_mem_size)  >= (start_addr + PGDIR_SIZE))) {
+		PRINTK_ERR("Invalid stack mem\n");
+		return -EINVAL;
+	}
+
+	if (num_stacks <= 0 || num_stacks > DOM_MAX_NUM_STACKS) {
+		PRINTK_ERR("Number of stacks cannot be 0 or larger than %d\n", DOM_MAX_NUM_STACKS);
+		return -EINVAL;
+	}
+
+	stack_size = stack_mem_size / num_stacks;
+	if (stack_size & 0xf) {
+		PRINTK_ERR("AARCH64 stack must be 16 bytes aligned\n");
+		return -EINVAL;
+	}
+
+	pgd = pgd_offset(current->mm, start_addr);
+
+	/* TODO: I think it's safe to deref pgd here but double-check. */
+	if (pgd_val(*pgd) == 0x0) {
+		PRINTK_ERR("Secure pgd entry not set\n");
+		return -EINVAL;
+	}
+
+	/* TODO: deallocate on explicit destroy or on task destroy */
+	current->mm->secure_pgd = kmalloc(PTRS_PER_PGD * sizeof(pgd_t *), GFP_KERNEL);
+	if (!current->mm->secure_pgd) {
+		PRINTK_ERR("Could not allocate memory for secure_pgd\n");
+		return -ENOMEM;
+	}
+
+	current->mm->dom_start_addr = start_addr;
+	current->mm->dom_end_addr = start_addr + PGDIR_SIZE;
+	current->mm->dom_entry_addr = entry_addr;
+	current->mm->dom_stack_mem = stack_mem;
+	current->mm->dom_stack_mem_size = stack_mem_size;
+	current->mm->dom_num_stacks = num_stacks;
+	current->mm->dom_stack_size = stack_size;
+
+	/* mark all stacks as unused */
+	for (i = 0; i < num_stacks; i++)
+		current->mm->dom_stacks[i] = 0;
+
+	spin_lock_init(&current->mm->dom_stack_lock);
+
+	spin_lock(&current->mm->page_table_lock);
+
+	memcpy(current->mm->secure_pgd, current->mm->pgd, PTRS_PER_PGD * sizeof(pgd_t *));
+
+	for (i = 0; i < PTRS_PER_PGD; i++) {
+		spgd = current->mm->pgd + i;
+		dpgd = current->mm->secure_pgd + i;
+	}
+
+	pgd_val(*pgd) = pgd_val(*pgd) & 0xfffffffffffff000; /* remove permissions */
+
+	flush_tlb_all(); /* flush range seems to have a cap on max tlb range */
+
+	current->mm->secure_pgd_enabled = true;
+
+	spin_unlock(&current->mm->page_table_lock);
+	
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long enterdom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	uint64_t stack_addr;
+	int i, stack_num = -1;
+
+	if (current->secure_pgd_mode == true) {
+		return 0;
+	}
+
+	spin_lock(&current->mm->dom_stack_lock);
+	/* get unused stack */;
+	for (i = 0; i < current->mm->dom_num_stacks; i++) {
+		if (current->mm->dom_stacks[i] == 0) {
+			stack_num = i;
+			break;
+		}
+	}
+
+	if (stack_num == -1) {
+		spin_unlock(&current->mm->dom_stack_lock);
+		PRINTK_ERR("No more secure stacks available\n");
+		return -EFAULT;
+	}
+
+	/* mark stack as used */;
+	current->mm->dom_stacks[stack_num] = 1;
+
+	/* Calculate stack addr */
+	/* FIXME: do we need the 0x100? If yes, shouldn't be larger */
+	stack_addr = current->mm->dom_stack_mem + (current->mm->dom_stack_mem_size - 0x100)
+						- (stack_num * current->mm->dom_stack_size);
+	spin_unlock(&current->mm->dom_stack_lock);
+	current->dom_stack_num = stack_num;
+
+	memcpy(&current->dom_regs, regs, sizeof(struct pt_regs));
+	regs->pc = (unsigned long) current->mm->dom_entry_addr;
+	regs->sp = (unsigned long) stack_addr;
+
+	current->secure_pgd_mode = true;
+	__cpu_switch_mm(current->mm->secure_pgd, current->mm);
+	/* Is this needed? No.*/
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long exitdom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	long ret;
+
+	if (current->secure_pgd_mode == false) {
+		return 0;
+	}
+
+	/* This shouldn't happen but let's check. */
+	if (current->dom_stack_num < 0 || current->dom_stack_num >= DOM_MAX_NUM_STACKS) {
+		PRINTK_ERR("Unexpected stack number!\n");
+		return -EFAULT;
+	}
+
+	__cpu_switch_mm(current->mm->pgd, current->mm);
+	/* Is this needed? Yes.*/
+	flush_tlb_mm(current->mm);
+	current->secure_pgd_mode = false;
+
+	ret = regs->regs[1];
+	memcpy(regs, &current->dom_regs, sizeof(struct pt_regs));
+	regs->regs[1] = ret;
+	spin_lock(&current->mm->dom_stack_lock);
+	/* mark stack as unused */;
+	current->mm->dom_stacks[current->dom_stack_num] = 0;
+	spin_unlock(&current->mm->dom_stack_lock);
+
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+SYSCALL_DEFINE0(destroydom)
+{
+#ifdef CONFIG_ARM64
+	/* TODO: implement */
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+uint64_t data;
+uint64_t je_arena;
+
+asmlinkage long readdom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	regs->regs[2] = data;
+
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long savedom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	data = regs->regs[1];
+
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long readarena(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	regs->regs[2] = je_arena;
+
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long savearena(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	je_arena = regs->regs[1];
+
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long covertdom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	if (current && current->mm && !current->mm->secure_pgd_enabled) {
+		current->mm->get_unmapped_area = arch_get_unmapped_area_topdown_domain;
+		current->secure_pgd_tmp_covert = true;
+	} else {
+		PRINTK_ERR("Should not temp enable secure heap. Domain already enabled\n");
+	}
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
+}
+
+asmlinkage long overtdom(struct pt_regs *regs)
+{
+#ifdef CONFIG_ARM64
+	if (current && current->mm && !current->mm->secure_pgd_enabled) {
+		current->secure_pgd_tmp_covert = false;
+	} else {
+		PRINTK_ERR("Should not temp disable secure heap. Domain already enabled\n");
+	}
+	return 0;
+#else /* CONFIG_ARM64 */
+	PRINTK_ERR("Architecture not supported\n");
+	return -EINVAL;
+#endif /* CONFIG_ARM64 */
 }

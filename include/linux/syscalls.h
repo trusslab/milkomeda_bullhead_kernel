@@ -876,4 +876,9 @@ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
 asmlinkage long sys_getrandom(char __user *buf, size_t count,
 			      unsigned int flags);
 
+asmlinkage long sys_getaddrdom(uint64_t __user *start_addr_p,
+			       uint64_t __user *end_addr_p);
+asmlinkage long sys_activatedom(uint64_t start_addr, uint64_t entry_addr, uint64_t stack_mem,
+				uint64_t stack_mem_size, uint64_t num_stacks);
+asmlinkage long sys_destroydom(void);
 #endif

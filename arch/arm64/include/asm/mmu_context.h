@@ -27,6 +27,7 @@
 #include <asm-generic/mm_hooks.h>
 #include <asm/cputype.h>
 #include <asm/pgtable.h>
+#include <asm/tlbflush.h>
 
 #define MAX_ASID_BITS	16
 
@@ -34,6 +35,8 @@ extern unsigned int cpu_last_asid;
 
 void __init_new_context(struct task_struct *tsk, struct mm_struct *mm);
 void __new_context(struct mm_struct *mm);
+
+void __cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm);
 
 #ifdef CONFIG_PID_IN_CONTEXTIDR
 static inline void contextidr_thread_switch(struct task_struct *next)
@@ -64,14 +67,21 @@ static inline void cpu_set_reserved_ttbr0(void)
 	: "r" (ttbr));
 }
 
-static inline void switch_new_context(struct mm_struct *mm)
+static inline void switch_new_context(struct mm_struct *mm,
+				      struct task_struct *tsk)
 {
 	unsigned long flags;
 
 	__new_context(mm);
 
 	local_irq_save(flags);
-	cpu_switch_mm(mm->pgd, mm);
+	if (tsk && tsk->secure_pgd_mode)
+		cpu_switch_mm(mm->secure_pgd, mm);
+	else {
+		cpu_switch_mm(mm->pgd, mm);
+		if (tsk && current && current->secure_pgd_mode && current->mm == mm)
+			flush_tlb_mm(mm);
+	}
 	local_irq_restore(flags);
 }
 
@@ -84,26 +94,33 @@ static inline void check_and_switch_context(struct mm_struct *mm,
 	 */
 	cpu_set_reserved_ttbr0();
 
-	if (!((mm->context.id ^ cpu_last_asid) >> MAX_ASID_BITS))
+	if (!((mm->context.id ^ cpu_last_asid) >> MAX_ASID_BITS)) {
 		/*
 		 * The ASID is from the current generation, just switch to the
 		 * new pgd. This condition is only true for calls from
 		 * context_switch() and interrupts are already disabled.
 		 */
-		cpu_switch_mm(mm->pgd, mm);
-	else if (irqs_disabled())
+		if (tsk && tsk->secure_pgd_mode)
+			cpu_switch_mm(mm->secure_pgd, mm);
+		else {
+			cpu_switch_mm(mm->pgd, mm);
+			if (tsk && current && current->secure_pgd_mode && current->mm == mm)
+				flush_tlb_mm(mm);
+		}
+	} else if (irqs_disabled()) {
 		/*
 		 * Defer the new ASID allocation until after the context
 		 * switch critical region since __new_context() cannot be
 		 * called with interrupts disabled.
 		 */
 		set_ti_thread_flag(task_thread_info(tsk), TIF_SWITCH_MM);
-	else
+	} else {
 		/*
 		 * That is a direct call to switch_mm() or activate_mm() with
 		 * interrupts enabled and a new context.
 		 */
-		switch_new_context(mm);
+		switch_new_context(mm, tsk);
+	}
 }
 
 #define init_new_context(tsk,mm)	(__init_new_context(tsk,mm),0)
@@ -120,7 +137,10 @@ static inline void finish_arch_post_lock_switch(void)
 		__new_context(mm);
 
 		local_irq_save(flags);
-		cpu_switch_mm(mm->pgd, mm);
+		if (current && current->secure_pgd_mode)
+			cpu_switch_mm(mm->secure_pgd, mm);
+		else
+			cpu_switch_mm(mm->pgd, mm);
 		local_irq_restore(flags);
 	}
 }

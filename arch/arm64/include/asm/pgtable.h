@@ -375,6 +375,7 @@ static inline pmd_t *pud_page_vaddr(pud_t pud)
 #define pgd_index(addr)		(((addr) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
 
 #define pgd_offset(mm, addr)	((mm)->pgd+pgd_index(addr))
+#define secure_pgd_offset(mm, addr)	((mm)->secure_pgd+pgd_index(addr))
 
 /* to find an entry in a kernel page-table-directory */
 #define pgd_offset_k(addr)	pgd_offset(&init_mm, addr)

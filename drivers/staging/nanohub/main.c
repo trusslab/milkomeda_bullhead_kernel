@@ -1097,9 +1097,6 @@ static int nanohub_kthread(void *arg)
 		if (buf) {
 			ret = request_wakeup_timeout(data, WAKEUP_TIMEOUT_MS);
 			if (ret) {
-				dev_info(sensor_dev,
-					 "%s: request_wakeup_timeout: ret=%d\n",
-					 __func__, ret);
 				continue;
 			}
 
